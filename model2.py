@@ -1,7 +1,9 @@
-import torch
 import json
-import torch.nn.functional as F
+
+import numpy as np
+import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 D_MODEL = 384
 MAX_SEQ_LEN = 96
@@ -15,6 +17,7 @@ class CNNEmbedding(nn.Module):
         self.input_channels = input_channels
         self.output_channels = output_channels
         self.conv1 = nn.Conv1d(input_channels, output_channels, 3, 1, 1)
+        self.ln1 = nn.LayerNorm((output_channels, max_seq_len))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """利用1D-CNN提取特征.
@@ -27,7 +30,7 @@ class CNNEmbedding(nn.Module):
         """
         # if x.ndim != 3:
         #     x = x.unsqueeze(0)
-        x = self.conv1(x)
+        x = F.relu(self.ln1(self.conv1(x)))
         # print("after conv")
         # print(x[0])
         return x.permute((0, 2, 1))
@@ -45,6 +48,7 @@ class MLP(nn.Module):
         self.fc1 = nn.Linear(input_channels, hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, num_classes)
         self.a1 = nn.ReLU()
+        self.ln1 = nn.LayerNorm((hidden_dim))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """根据TransformerEncoder的输出预测最终类别.
@@ -55,7 +59,7 @@ class MLP(nn.Module):
         Returns:
             返回一个Tensor, 形状为 (batch, num_classes)
         """
-        x = self.a1(self.fc1(x))
+        x = self.a1(self.ln1(self.fc1(x)))
         x = self.fc2(x)
         return x
 
@@ -68,11 +72,12 @@ class TFEncoder(nn.Module):
         super().__init__()
         self.max_seq_len = max_seq_len
         self.model_dim = model_dim
-        self.pos_param = nn.Parameter(torch.zeros(1, max_seq_len, model_dim))
+        # self.pos_param = nn.Parameter(torch.zeros(1, max_seq_len + 1, model_dim))
+        self.pos_param = get_cosine_positional_encoding(max_seq_len + 1, model_dim).to("cuda")
         self.cls_param = nn.Parameter(torch.zeros(1, model_dim))
         # input (batch, seq, feature)
-        encoder_layer = nn.TransformerEncoderLayer(model_dim, 8, batch_first=True)
-        self.tf_encoder = nn.TransformerEncoder(encoder_layer, 6)
+        encoder_layer = nn.TransformerEncoderLayer(model_dim, 8, batch_first=True, norm_first=True)
+        self.tf_encoder = nn.TransformerEncoder(encoder_layer, 6, enable_nested_tensor=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """对输入添加位置编码和cls token, 使用TransformerEncoder对输入进行处理, 输出cls token对应的输出.
@@ -83,9 +88,10 @@ class TFEncoder(nn.Module):
         Returns:
             返回一个Tensor, 形状为(batch, feature)
         """
-        x_pos_enc = x + self.pos_param
-        x_cls = torch.cat([self.cls_param.repeat((x_pos_enc.shape[0], 1, 1)), x_pos_enc], dim=1)
-        output = self.tf_encoder(x_cls)
+        x_cls = torch.cat([self.cls_param.repeat((x.shape[0], 1, 1)), x], dim=1)
+        x_pos_enc = x_cls + self.pos_param
+
+        output = self.tf_encoder(x_pos_enc)
         return output[:, 0, :]
 
     def __str__(self) -> str:
@@ -197,6 +203,17 @@ def get_dummy_soft_label() -> torch.Tensor:
     return torch.randn(250)
 
 
+def get_cosine_positional_encoding(max_seq_len: int, model_dim: int) -> torch.Tensor:
+    position = torch.arange(max_seq_len, dtype=torch.float).unsqueeze(1)
+    div_term = torch.exp(torch.arange(0, model_dim, 2).float() * (-np.log(10000.0) / model_dim))
+
+    pe = torch.zeros(max_seq_len, model_dim)
+    pe[:, 0::2] = torch.sin(position * div_term)
+    pe[:, 1::2] = torch.cos(position * div_term)
+
+    return pe
+
+
 class SoftLabel:
     def __init__(self, all_soft_label: torch.Tensor):
         self.all_soft_label = all_soft_label
@@ -255,3 +272,5 @@ if __name__ == "__main__":
     print(f"MyModel output {f.shape}")
     g = model2(e)
     print(f"MixUpModel output {g.shape}")
+
+    # print(get_cosine_positional_encoding(97, 284).shape)

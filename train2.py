@@ -12,9 +12,9 @@ from dataset2 import ASLDataset
 from model2 import IMMLabel, MixUpModel, MyModel, SoftLabel, get_real_gloss_feature, get_real_soft_label
 
 batch_size = 32
-initial_lr = 0.01
+initial_lr = 0.001
 warmup_epoch = 5
-total_epoch = 100
+total_epoch = 150
 
 model_name = "test1"
 result_path = "results2"
@@ -32,7 +32,7 @@ def lr_scheduler(epoch) -> float:
 writer = SummaryWriter(comment=model_name)
 
 asl_dataset = ASLDataset(is_train=True)
-asl_dataloader = DataLoader(asl_dataset, batch_size=batch_size, shuffle=True, pin_memory=True, num_workers=4)
+asl_dataloader = DataLoader(asl_dataset, batch_size=batch_size, shuffle=True, pin_memory=True, num_workers=2)
 
 test_dataset = ASLDataset(is_train=False)
 test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, pin_memory=False, num_workers=1)
@@ -42,10 +42,15 @@ gloss_feature = get_real_gloss_feature().to(device)
 all_soft_label = get_real_soft_label(gloss_feature).to(device)
 soft_label_converter = SoftLabel(all_soft_label)
 model1 = MyModel(input_channels=122, model_dim=384, max_seq_len=96, num_classes=250, hidden_dim=1024).to(device)
-model2 = MixUpModel(gloss_feature=gloss_feature, num_classes=250, text_token_len=300, model_dim=384).to(device)
+model2 = MixUpModel(
+    gloss_feature=gloss_feature, num_classes=250, text_token_len=300, model_dim=384, hidden_dim=1024
+).to(device)
 
 criterion = nn.CrossEntropyLoss()
 optimizer = torch.optim.Adam(chain(model1.parameters(), model2.parameters()), lr=initial_lr)
+
+param_num = sum(p.numel() for p in chain(model1.parameters(), model2.parameters()))
+print("parameter num: {:.0f}M\n".format(param_num / 1e6))
 
 total_step = len(asl_dataloader)
 for epoch in range(total_epoch):
@@ -96,9 +101,10 @@ for epoch in range(total_epoch):
             writer.add_scalar("loss/train", loss.item(), epoch)
         start_time = time.time()
 
-    if (epoch + 1) % 5 == 0:
+    if (epoch + 1) % 10 == 0:
         os.makedirs(result_path, exist_ok=True)
-        torch.save(model1.state_dict(), os.path.join(result_path, model_name + f"_{epoch:03d}.pt"))
+        torch.save(model1.state_dict(), os.path.join(result_path, model_name + f"_1_{epoch:03d}.pt"))
+        torch.save(model2.state_dict(), os.path.join(result_path, model_name + f"_2_{epoch:03d}.pt"))
 
         # eval
         model1.eval()
@@ -107,6 +113,7 @@ for epoch in range(total_epoch):
         total_num = 0
         for i, (data, label) in enumerate(test_dataloader):
             data = data.to(device)
+            label = label.to(device)
             soft_label = soft_label_converter.generate_soft_label(label).to(device)
 
             _, output = model1(data)

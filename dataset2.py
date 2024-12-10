@@ -51,9 +51,7 @@ def apply_autoflip(xy):
     lipsUpperInner = xy[:, lipsUpperInner_indexes]
     lipsLowerInner = xy[:, lipsLowerInner_indexes]
 
-    x = torch.concat(
-        (hand, lipsUpperOuter, lipsLowerOuter, lipsUpperInner, lipsLowerInner),
-        dim=1)
+    x = torch.concat((hand, lipsUpperOuter, lipsLowerOuter, lipsUpperInner, lipsLowerInner), dim=1)
     # print("feature", x.shape)
     return x
 
@@ -80,22 +78,21 @@ def normalize_by_midwayBetweenEyes(x):
     return x - m
 
 
-class ASLDataset(Dataset):
-
+class ASLDatasetRaw(Dataset):
     def __init__(self, is_train=True, max_seq_len=96) -> None:
         super().__init__()
         self.max_seq_len = max_seq_len
         df = pd.read_csv(TRAIN_FILE)
         if is_train:
-            df = df.iloc[:int(len(df) * 0.8), :]
+            df = df.iloc[: int(len(df) * 0.8), :]
         else:
-            df = df.iloc[int(len(df) * 0.8):, :]
+            df = df.iloc[int(len(df) * 0.8) :, :]
         label_map = json.load(open(JSON_FILE, "r"))
         df["label"] = df["sign"].map(label_map)
         self.df = df
         self.length = len(df)
 
-    def __getitem__(self, idx) -> tuple[list[torch.Tensor], torch.Tensor]:
+    def __getitem__(self, idx) -> tuple[torch.Tensor, torch.Tensor]:
         """读取并返回一个文件的数据.
 
         Args:
@@ -116,17 +113,47 @@ class ASLDataset(Dataset):
         xy = apply_autoflip(xy)
         #  (seq_len, 61, 2) -> (channels, max_seq_len)
         xy = xy.flatten(1, 2).permute((1, 0))
-        xy = nn.ConstantPad1d((0, max(0, self.max_seq_len - xy.shape[-1])),
-                              0)(xy)[:, :96]
+        xy = nn.ConstantPad1d((0, max(0, self.max_seq_len - xy.shape[-1])), 0)(xy)[:, :96]
 
-        return xy, torch.tensor(row.label)
+        label = torch.tensor(row.label)
+        return xy, label
+
+    def __len__(self) -> int:
+        return self.length
+
+
+class ASLDataset(Dataset):
+    def __init__(self, is_train=True, max_seq_len=96) -> None:
+        super().__init__()
+        load_prefix = "train_" if is_train else "test_"
+        self.all_data = np.load(load_prefix + "x.npy")
+        self.all_label = np.load(load_prefix + "y.npy")
+        self.length = self.all_data.shape[0]
+
+    def __getitem__(self, idx) -> tuple[torch.Tensor, torch.Tensor]:
+        data, label = (
+            torch.tensor(self.all_data[idx]),
+            torch.tensor(
+                [
+                    self.all_label[idx],
+                ],
+                dtype=torch.long,
+            ),
+        )
+        return data, label
 
     def __len__(self) -> int:
         return self.length
 
 
 if __name__ == "__main__":
-    for i in range(10):
-        data = ASLDataset(True)[i]
-        print(data[0].shape)
-        print(data[1])
+    data = ASLDatasetRaw(True)[10]
+    print(data[0].shape)
+    print(data[1].shape)
+    print(data[1])
+    print()
+
+    data = ASLDataset(True)[10]
+    print(data[0].shape)
+    print(data[1].shape)
+    print(data[1])
