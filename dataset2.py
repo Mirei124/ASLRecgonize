@@ -132,13 +132,8 @@ class ASLDataset(Dataset):
 
     def __getitem__(self, idx) -> tuple[torch.Tensor, torch.Tensor]:
         data, label = (
-            torch.tensor(self.all_data[idx]),
-            torch.tensor(
-                [
-                    self.all_label[idx],
-                ],
-                dtype=torch.long,
-            ),
+            torch.from_numpy(self.all_data[idx]),
+            torch.tensor(self.all_label[idx], dtype=torch.long),
         )
         return data, label
 

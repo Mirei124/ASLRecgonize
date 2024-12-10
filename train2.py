@@ -11,7 +11,7 @@ from torch.utils.tensorboard.writer import SummaryWriter
 from dataset2 import ASLDataset
 from model2 import IMMLabel, MixUpModel, MyModel, SoftLabel, get_real_gloss_feature, get_real_soft_label
 
-batch_size = 32
+batch_size = 64
 initial_lr = 0.001
 warmup_epoch = 5
 total_epoch = 150
@@ -41,10 +41,10 @@ imm_label = IMMLabel()
 gloss_feature = get_real_gloss_feature().to(device)
 all_soft_label = get_real_soft_label(gloss_feature).to(device)
 soft_label_converter = SoftLabel(all_soft_label)
-model1 = MyModel(input_channels=122, model_dim=384, max_seq_len=96, num_classes=250, hidden_dim=1024).to(device)
-model2 = MixUpModel(
-    gloss_feature=gloss_feature, num_classes=250, text_token_len=300, model_dim=384, hidden_dim=1024
-).to(device)
+model1 = MyModel(input_channels=122, model_dim=128, max_seq_len=96, num_classes=250, hidden_dim=512).to(device)
+model2 = MixUpModel(gloss_feature=gloss_feature, num_classes=250, text_token_len=300, model_dim=128, hidden_dim=512).to(
+    device
+)
 
 criterion = nn.CrossEntropyLoss()
 optimizer = torch.optim.Adam(chain(model1.parameters(), model2.parameters()), lr=initial_lr)
@@ -59,12 +59,29 @@ for epoch in range(total_epoch):
         param_group["lr"] = lr
 
     mu = 1 - (1 - 0.99) * (np.cos(np.pi * epoch / total_epoch) + 1) / 2
+    gamma = (np.cos(np.pi * epoch / total_epoch) + 1) / 2
+
+    data_iter = iter(asl_dataloader)
+    batch_raw = next(data_iter)
+    next_batch = [
+        batch_raw[0].cuda(non_blocking=True),
+        batch_raw[1].cuda(non_blocking=True),
+        imm_label.generate_imm_label(batch_raw[1]).cuda(non_blocking=True),
+        soft_label_converter.generate_soft_label(batch_raw[1]).cuda(non_blocking=True),
+    ]
 
     start_time = time.time()
-    for i, (data, label) in enumerate(asl_dataloader):
-        data = data.to(device)
-        label2 = imm_label.generate_imm_label(label).to(device)
-        soft_label = soft_label_converter.generate_soft_label(label).to(device)
+    # for i, (data, label) in enumerate(asl_dataloader):
+    for i in range(total_step):
+        data, label, label2, soft_label = next_batch
+        if i + 1 != total_step:
+            batch_raw = next(data_iter)
+            next_batch = [
+                batch_raw[0].cuda(non_blocking=True),
+                batch_raw[1].cuda(non_blocking=True),
+                imm_label.generate_imm_label(batch_raw[1]).cuda(non_blocking=True),
+                soft_label_converter.generate_soft_label(batch_raw[1]).cuda(non_blocking=True),
+            ]
         data_time = time.time()
 
         feature, output = model1(data)
@@ -72,7 +89,7 @@ for epoch in range(total_epoch):
 
         output2 = model2(feature)
         loss_imm = criterion(output2, label2)
-        loss += loss_imm
+        loss += gamma * loss_imm
 
         optimizer.zero_grad()
         loss.backward()
@@ -98,13 +115,13 @@ for epoch in range(total_epoch):
                     total_epoch * total_step * step_time / 60,
                 )
             )
-            writer.add_scalar("loss/train", loss.item(), epoch)
+            writer.add_scalar("loss/train", loss.item(), epoch * total_step + i + 1)
         start_time = time.time()
 
     if (epoch + 1) % 10 == 0:
         os.makedirs(result_path, exist_ok=True)
-        torch.save(model1.state_dict(), os.path.join(result_path, model_name + f"_1_{epoch:03d}.pt"))
-        torch.save(model2.state_dict(), os.path.join(result_path, model_name + f"_2_{epoch:03d}.pt"))
+        torch.save(model1.state_dict(), os.path.join(result_path, model_name + f"_1_{epoch + 1:03d}.pt"))
+        torch.save(model2.state_dict(), os.path.join(result_path, model_name + f"_2_{epoch + 1:03d}.pt"))
 
         # eval
         model1.eval()
@@ -125,8 +142,8 @@ for epoch in range(total_epoch):
             avg_accuracy += correct_num.item()
         avg_loss = avg_loss / total_num
         avg_accuracy = avg_accuracy / total_num
-        writer.add_scalar("loss/valid", avg_loss, epoch)
-        writer.add_scalar("acc/valid", avg_accuracy, epoch)
+        writer.add_scalar("loss/valid", avg_loss, (epoch + 1) * total_step)
+        writer.add_scalar("acc/valid", avg_accuracy, (epoch + 1) * total_step)
         print("Valid epoch {} Loss: {:.4f} Acc: {:.4f}".format(epoch, avg_loss, avg_accuracy))
         model1.train()
 
