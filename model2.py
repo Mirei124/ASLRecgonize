@@ -18,6 +18,9 @@ class CNNEmbedding(nn.Module):
         self.output_channels = output_channels
         self.conv1 = nn.Conv1d(input_channels, output_channels, 3, 1, 1)
         self.ln1 = nn.LayerNorm((output_channels, max_seq_len))
+        self.conv2 = nn.Conv1d(output_channels, output_channels, 3, 1, 1)
+        self.ln2 = nn.LayerNorm((output_channels, max_seq_len))
+        self.conv3 = nn.Conv1d(input_channels, output_channels, 1, 1, 0)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """利用1D-CNN提取特征.
@@ -30,10 +33,13 @@ class CNNEmbedding(nn.Module):
         """
         # if x.ndim != 3:
         #     x = x.unsqueeze(0)
-        x = F.relu(self.ln1(self.conv1(x)))
+        y = F.relu(self.ln1(self.conv1(x)))
+        y = self.ln2(self.conv2(y))
+        # y += self.conv3(x)
+        y = F.relu(y)
         # print("after conv")
         # print(x[0])
-        return x.permute((0, 2, 1))
+        return y.permute((0, 2, 1))
 
     def __str__(self) -> str:
         return f"CNNEmbedding: Convert (batch, {self.input_channels}, seq_len) to (batch, seq_len, {self.output_channels}), then pad by 0 to (batch, {self.max_seq_len}, {self.output_channels})"

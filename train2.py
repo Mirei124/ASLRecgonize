@@ -13,8 +13,9 @@ from model2 import IMMLabel, MixUpModel, MyModel, SoftLabel, get_real_gloss_feat
 
 batch_size = 64
 initial_lr = 0.001
-warmup_epoch = 5
-total_epoch = 150
+warmup_epoch = 3
+total_epoch = 300
+# decay_epoch = 50
 
 model_name = "test1"
 result_path = "results2"
@@ -29,6 +30,13 @@ def lr_scheduler(epoch) -> float:
         return initial_lr * ((1 - (epoch - warmup_epoch) / (total_epoch - warmup_epoch)) ** 0.9)
 
 
+def cosine_scheduler(epoch) -> float:
+    if epoch < warmup_epoch:
+        return epoch * initial_lr / warmup_epoch
+    else:
+        return initial_lr * (np.cos(np.pi * (epoch - warmup_epoch) / (total_epoch - warmup_epoch)) + 1) / 2
+
+
 writer = SummaryWriter(comment=model_name)
 
 asl_dataset = ASLDataset(is_train=True)
@@ -41,22 +49,22 @@ imm_label = IMMLabel()
 gloss_feature = get_real_gloss_feature().to(device)
 all_soft_label = get_real_soft_label(gloss_feature).to(device)
 soft_label_converter = SoftLabel(all_soft_label)
-model1 = MyModel(input_channels=122, model_dim=128, max_seq_len=96, num_classes=250, hidden_dim=512).to(device)
-model2 = MixUpModel(gloss_feature=gloss_feature, num_classes=250, text_token_len=300, model_dim=128, hidden_dim=512).to(
+model1 = MyModel(input_channels=122, model_dim=384, max_seq_len=96, num_classes=250, hidden_dim=1024).to(device)
+model2 = MixUpModel(gloss_feature=gloss_feature, num_classes=250, text_token_len=300, model_dim=384, hidden_dim=1024).to(
     device
 )
 
 criterion = nn.CrossEntropyLoss()
-optimizer = torch.optim.Adam(chain(model1.parameters(), model2.parameters()), lr=initial_lr)
+optimizer = torch.optim.AdamW(chain(model1.parameters(), model2.parameters()), lr=initial_lr)
 
 param_num = sum(p.numel() for p in chain(model1.parameters(), model2.parameters()))
 print("parameter num: {:.0f}M\n".format(param_num / 1e6))
 
 total_step = len(asl_dataloader)
 for epoch in range(total_epoch):
-    lr = lr_scheduler(epoch)
-    for param_group in optimizer.param_groups:
-        param_group["lr"] = lr
+    # lr = cosine_scheduler(epoch)
+    # for param_group in optimizer.param_groups:
+    #     param_group["lr"] = lr
 
     mu = 1 - (1 - 0.99) * (np.cos(np.pi * epoch / total_epoch) + 1) / 2
     gamma = (np.cos(np.pi * epoch / total_epoch) + 1) / 2
@@ -112,7 +120,7 @@ for epoch in range(total_epoch):
                     loss.item(),
                     data_time * 1000,
                     step_time * 1000,
-                    total_epoch * total_step * step_time / 60,
+                    ((total_epoch - epoch) * total_step - i - 1) * step_time / 60,
                 )
             )
             writer.add_scalar("loss/train", loss.item(), epoch * total_step + i + 1)
